@@ -11,6 +11,12 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-5"
+    #: Reasoning depth. Classification with a small tool set does not need the
+    #: top of the range; raise it if evaluation shows headroom.
+    analyst_effort: str = "medium"
+    #: "auto" uses Claude when a key is set and the scripted client otherwise.
+    #: Force either with "anthropic" or "stub".
+    analyst_client: str = "auto"
 
     log_level: str = "INFO"
 

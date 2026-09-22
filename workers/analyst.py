@@ -1,15 +1,18 @@
 """AI analyst worker: interprets collected evidence.
 
-Day 1 skeleton — consumes tasks, moves the investigation through its stage, and
-chains to correlation. The Claude agent loop arrives on Day 2.
+The reasoning layer. It collects nothing — it reads what the enrichment
+pipeline recorded, and produces a conclusion whose citations are verified
+against the database before they are stored.
 """
 
 import asyncio
 
+from analyst.agent import AnalysisFailed, analyse, load_evidence
+from analyst.factory import build_client
 from core.lifecycle import Status
 from core.logging import get_logger
 from core.streams import STREAM_ANALYZE, STREAM_CORRELATE
-from workers.base import Worker, run_worker
+from workers.base import PermanentError, Worker, run_worker
 
 log = get_logger(__name__)
 
@@ -21,18 +24,28 @@ class AnalystWorker(Worker):
     next_stream = STREAM_CORRELATE
 
     async def handle(self, investigation_id: str) -> None:
-        observations = await self.db.fetchval(
-            "SELECT count(*) FROM observations WHERE investigation_id = $1", investigation_id
-        )
-        log.info("analysis stage reached", observation_count=observations)
+        evidence = await load_evidence(self.db, investigation_id)
+        primary = evidence["primary_entity"]
 
-        # Day 2:
-        #   - load observations and enrichment_status as the evidence packet
-        #   - call Claude with the five tools, prompt caching on the stable
-        #     prefix, a hard iteration cap, and refusal handling
-        #   - verify every returned evidence_ref exists AND belongs to this
-        #     investigation; reject back to the model if not
-        #   - persist the result and its FK-backed evidence links
+        log.info(
+            "analysis started",
+            observations=len(evidence["observations"]),
+            enrichment_status=evidence["enrichment_status"],
+        )
+
+        client = build_client(
+            indicator=evidence["indicator"],
+            primary_entity_id=str(primary["id"]) if primary else None,
+        )
+        try:
+            await analyse(self.db, investigation_id, client)
+        except AnalysisFailed as exc:
+            # Not retryable: re-running produces the same outcome and costs
+            # another set of API calls. Record why and let the investigation
+            # finish as failed, still queryable.
+            raise PermanentError(str(exc)) from exc
+        finally:
+            await client.close()
 
 
 if __name__ == "__main__":

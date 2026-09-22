@@ -28,17 +28,29 @@ If the model invents a fact, there's no record to cite, and the result is reject
 
 ## Quickstart
 
-**Prerequisites:** Docker, Docker Compose, and an [Anthropic API key](https://console.anthropic.com/).
+**Prerequisites:** Docker and Docker Compose. An [Anthropic API key](https://console.anthropic.com/) is optional — see below.
 
 ```bash
 git clone https://github.com/xinyuhwang/ThreatGraph.git
 cd ThreatGraph
 
 cp .env.example .env
-# Open .env and set ANTHROPIC_API_KEY
+# Optional: set ANTHROPIC_API_KEY in .env
 
 docker compose up
 ```
+
+> **Running without an API key.** The analyst sits behind a client interface
+> with two implementations. With `ANTHROPIC_API_KEY` set, it calls Claude.
+> Without one, it falls back to a scripted client that reads the same evidence
+> and exercises the same tools, grounding checks and persistence path — so the
+> pipeline runs end to end on a fresh clone.
+>
+> Scripted conclusions are prefixed `[stub]` so they are never mistaken for
+> model output. The marker disappears once a key is configured. What the
+> scripted client cannot tell you is whether *Claude* behaves well — whether
+> the prompt works, whether it cites real evidence unprompted. That is what
+> the `ai_eval` test tier is for, and it needs a key.
 
 That's it. On first start the database is migrated and seeded with four prior investigations, so the correlation features have history to work with.
 
