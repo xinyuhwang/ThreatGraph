@@ -1,0 +1,85 @@
+name: threatgraph
+
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://threatgraph:threatgraph@postgres:5432/threatgraph
+    REDIS_URL: redis://redis:6379/0
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: threatgraph
+      POSTGRES_PASSWORD: threatgraph
+      POSTGRES_DB: threatgraph
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U threatgraph -d threatgraph"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # Runs once and exits. Everything else waits for it to succeed, so no
+  # service races another to apply the same migration.
+  migrate:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://threatgraph:threatgraph@postgres:5432/threatgraph
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "migrations.run"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  worker-enrichment:
+    <<: *app
+    command: ["python", "-m", "workers.enrichment"]
+
+  worker-analyst:
+    <<: *app
+    command: ["python", "-m", "workers.analyst"]
+
+  worker-correlation:
+    <<: *app
+    command: ["python", "-m", "workers.correlation"]
+
+volumes:
+  pgdata:
