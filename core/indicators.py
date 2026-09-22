@@ -67,6 +67,18 @@ def _derive_url(indicator: str) -> tuple[str, str]:
     return normalised, "url"
 
 
+def hostname_of(indicator: str, indicator_type: str) -> str:
+    """The hostname to run host-level enrichment against.
+
+    A domain is its own hostname; a URL's is the netloc. Both DNS collection
+    and correlation need this, and they must agree — otherwise they would
+    create two entities for the same host.
+    """
+    if indicator_type == "url":
+        return urlsplit(indicator).hostname or indicator
+    return indicator
+
+
 def _is_domain(value: str) -> bool:
     return bool(_DOMAIN_RE.match(value)) and len(value) <= 253
 
