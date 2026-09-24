@@ -127,9 +127,7 @@ class CorrelationWorker(Worker):
                 created += 1
         return created
 
-    async def _link_url_to_host(
-        self, indicator: str, indicator_type: str, domain_id: UUID
-    ) -> int:
+    async def _link_url_to_host(self, indicator: str, indicator_type: str, domain_id: UUID) -> int:
         """url --hosted_on--> domain, so a URL investigation connects to the
         domain graph rather than sitting isolated."""
         if indicator_type != "url":

@@ -94,9 +94,7 @@ def build_evidence_packet(
     if observations:
         lines.append("Observations collected for this investigation:")
         for obs in observations:
-            lines.append(
-                f"  id={obs['id']}  source={obs['source']}  status={obs['status']}"
-            )
+            lines.append(f"  id={obs['id']}  source={obs['source']}  status={obs['status']}")
         lines += [
             "",
             "Those observation IDs are the only ones you may cite in evidence_refs.",

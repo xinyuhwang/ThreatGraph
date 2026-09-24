@@ -32,9 +32,7 @@ def result_citing(evidence_refs, entity_ids, **overrides):
 
 
 async def test_real_citations_pass(db, investigation):
-    result = result_citing(
-        sorted(investigation["observation_ids"]), [investigation["entity_id"]]
-    )
+    result = result_citing(sorted(investigation["observation_ids"]), [investigation["entity_id"]])
     assert await verify(db, investigation["id"], result) is None
 
 
@@ -53,9 +51,7 @@ async def test_evidence_from_another_investigation_is_rejected(
     db, investigation, other_investigation
 ):
     """A real observation is still not evidence for *this* verdict."""
-    result = result_citing(
-        [other_investigation["observation_id"]], [investigation["entity_id"]]
-    )
+    result = result_citing([other_investigation["observation_id"]], [investigation["entity_id"]])
 
     failure = await verify(db, investigation["id"], result)
 
@@ -106,9 +102,7 @@ async def test_agent_recovers_after_a_rejected_citation(db, investigation):
     outcome = await analyse(db, investigation["id"], client)
 
     assert outcome.iterations == 3
-    assert {str(ref) for ref in outcome.result.evidence_refs} == investigation[
-        "observation_ids"
-    ]
+    assert {str(ref) for ref in outcome.result.evidence_refs} == investigation["observation_ids"]
 
     linked = await db.fetch(
         """
@@ -123,16 +117,12 @@ async def test_agent_recovers_after_a_rejected_citation(db, investigation):
 
 
 async def test_evidence_following_client_produces_a_grounded_result(db, investigation):
-    client = ScriptedClient.evidence_following(
-        "grounding-test.example", investigation["entity_id"]
-    )
+    client = ScriptedClient.evidence_following("grounding-test.example", investigation["entity_id"])
 
     outcome = await analyse(db, investigation["id"], client)
 
     assert outcome.result.evidence_refs
-    assert {str(ref) for ref in outcome.result.evidence_refs} <= investigation[
-        "observation_ids"
-    ]
+    assert {str(ref) for ref in outcome.result.evidence_refs} <= investigation["observation_ids"]
     assert outcome.result.explanation.startswith("[stub]")
 
 
@@ -157,9 +147,7 @@ async def test_refusal_does_not_become_a_guess(db, investigation):
 
 async def test_persisting_twice_does_not_duplicate(db, investigation):
     """A redelivered analyst task must not write a second conclusion."""
-    result = result_citing(
-        sorted(investigation["observation_ids"]), [investigation["entity_id"]]
-    )
+    result = result_citing(sorted(investigation["observation_ids"]), [investigation["entity_id"]])
 
     first = await persist(db, investigation["id"], result)
     second = await persist(db, investigation["id"], result)

@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A push that supersedes an in-flight run cancels it rather than queueing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install ruff
+        run: pip install "ruff>=0.8"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Check formatting
+        run: ruff format --check .
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    # Real PostgreSQL and Redis. The integration tier exercises uniqueness
+    # constraints, XCLAIM semantics and cascade behaviour, none of which a
+    # mock would reproduce faithfully — and the bugs found during this build
+    # were mostly in exactly those places.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: threatgraph
+          POSTGRES_PASSWORD: threatgraph
+          POSTGRES_DB: threatgraph
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U threatgraph -d threatgraph"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://threatgraph:threatgraph@localhost:5432/threatgraph
+      REDIS_URL: redis://localhost:6379/0
+      # The analyst runs against the scripted client. CI must never reach the
+      # live API: it would cost money on every push and make runs flaky.
+      ANALYST_CLIENT: stub
+      ANTHROPIC_API_KEY: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Apply migrations and load seed data
+        # Also verifies seeds/demo.sql parses and satisfies every constraint,
+        # which no unit test covers.
+        run: python -m migrations.run
+
+      - name: Run tests
+        # The ai_eval tier is excluded by addopts in pyproject.toml: it calls
+        # the live API, costs money, and is not deterministic.
+        run: pytest -v
+
+      - name: Verify the AI evaluation tier is collectable
+        # Those tests never run here, so nothing else would catch an import
+        # error or a broken fixture in them until someone ran them by hand.
+        run: pytest -m ai_eval --collect-only -q
+
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: threatgraph:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify the image starts and the app imports
+        run: |
+          docker run --rm threatgraph:ci python -c "
+          import api.main, workers.enrichment, workers.analyst
+          import workers.correlation, workers.sweeper
+          print('all entrypoints import cleanly')
+          "
+
+  compose:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the full stack
+        run: |
+          cp .env.example .env
+          docker compose up -d --build
+
+      - name: Wait for the API
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf localhost:8000/health >/dev/null; then
+              echo "api healthy"; exit 0
+            fi
+            sleep 2
+          done
+          echo "api did not become healthy"; exit 1
+
+      - name: Submit an investigation and assert it is grounded
+        # The definition of done from the design document, as a gate: a
+        # classification is produced and every citation resolves to a real
+        # observation belonging to that investigation.
+        run: |
+          set -euo pipefail
+          ID=$(curl -sf -X POST localhost:8000/investigations \
+                 -H 'Content-Type: application/json' \
+                 -d '{"indicator": "example.com"}' | jq -r .id)
+          echo "investigation $ID"
+
+          for _ in $(seq 1 60); do
+            STATUS=$(curl -sf "localhost:8000/investigations/$ID" | jq -r .status)
+            [ "$STATUS" = "complete" ] && break
+            [ "$STATUS" = "failed" ] && { echo "investigation failed"; exit 1; }
+            sleep 2
+          done
+          [ "$STATUS" = "complete" ] || { echo "timed out in $STATUS"; exit 1; }
+
+          curl -sf "localhost:8000/investigations/$ID" | jq -e '
+            .result.classification
+              | IN("benign","suspicious","malicious","unknown")
+          ' > /dev/null
+          echo "classification is valid"
+
+          REFS=$(curl -sf "localhost:8000/investigations/$ID" | jq -r '.result.evidence_refs[]')
+          [ -n "$REFS" ] || { echo "result cited no evidence"; exit 1; }
+
+          EVIDENCE=$(curl -sf "localhost:8000/investigations/$ID/evidence" | jq -r '.[].id')
+          for ref in $REFS; do
+            echo "$EVIDENCE" | grep -q "$ref" \
+              || { echo "cited $ref does not belong to this investigation"; exit 1; }
+          done
+          echo "every citation resolves to a real observation"
+
+      - name: Verify seed data and search
+        run: |
+          set -euo pipefail
+          COUNT=$(curl -sf 'localhost:8000/search?q=paypal' | jq '.investigations | length')
+          [ "$COUNT" -ge 3 ] || { echo "seeded history missing (found $COUNT)"; exit 1; }
+          echo "search found $COUNT seeded investigations"
+
+      - name: Verify metrics are exposed
+        run: |
+          curl -sf localhost:8000/metrics | grep -q 'threatgraph_stage_duration_seconds_bucket'
+          echo "stage duration histogram present"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

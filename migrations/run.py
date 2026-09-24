@@ -44,8 +44,7 @@ async def main() -> int:
     try:
         await conn.execute(BOOTSTRAP)
         applied = {
-            row["filename"]
-            for row in await conn.fetch("SELECT filename FROM schema_migrations")
+            row["filename"] for row in await conn.fetch("SELECT filename FROM schema_migrations")
         }
 
         pending = sorted(p for p in MIGRATIONS_DIR.glob("*.sql") if p.name not in applied)

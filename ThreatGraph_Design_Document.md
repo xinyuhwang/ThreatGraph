@@ -3,7 +3,10 @@
 **AI-Powered Threat Intelligence & Investigation Platform**
 
 Design Document — 3-Day Build Specification
-Version 2.0 | September 2026
+Version 2.1 | September 2026
+
+*Version 2.1 rewrites §12 from a plan into a record of what was built, and
+corrects the data model to match the implementation.*
 
 ThreatGraph turns a submitted digital indicator into structured, searchable, connected intelligence. This document defines the architecture, data model, AI integration, and build plan for a focused 3-day MVP that demonstrates a complete, production-oriented engineering stack.
 
@@ -31,7 +34,7 @@ ThreatGraph turns a submitted digital indicator into structured, searchable, con
 9. [Event-Driven Processing](#9-event-driven-processing)
 10. [Reliability](#10-reliability)
 11. [API Reference](#11-api-reference)
-12. [3-Day Build Plan](#12-3-day-build-plan)
+12. [Build Record](#12-build-record)
 13. [Testing Strategy](#13-testing-strategy)
 
 ---
@@ -183,7 +186,7 @@ Primary record for each submitted indicator.
 | `indicator_type` | `domain` or `url`. **Derived server-side**, never trusted from the client. (`email`, `social` are future extensions.) |
 | `status` | `pending`, `enriching`, `analyzing`, `correlating`, `complete`, `failed`, `cancelled`. |
 | `enrichment_status` | `jsonb`. Per-source outcome, e.g. `{"dns": "ok", "http": "failed"}`. Read by the AI analyst so it knows what is missing. |
-| `search_vector` | `tsvector`, generated. Backs full-text search. |
+| `error` | Why the investigation failed, if it did. It stays queryable either way. |
 | `created_at` / `updated_at` | Creation time and last status change. |
 
 ### `entities`
@@ -639,55 +642,134 @@ All endpoints return `{ "detail": "message", "code": "ERROR_CODE", "request_id":
 
 ---
 
-## 12. 3-Day Build Plan
+## 12. Build Record
 
-Three sequential days, each ending with a testable milestone. Day 3 ends with a demo-ready investigation flow.
+Three phases, each ending at a testable milestone. This section was written as a
+plan and has been rewritten as a record: every item below was built, and the
+notes describe what the plan got wrong.
+
+Commits: `7e1dd0f` (Day 1), `33d9b9f` and `ca62063` (Day 2), `3a752c5` (Day 3).
 
 ### Day 1 — Foundation
 
 *Goal: the backend skeleton runs in Docker Compose. An investigation can be submitted and its status retrieved. No enrichment or AI yet.*
 
-- [ ] PostgreSQL schema: all 6 tables, **all uniqueness constraints**, trigram and FTS indexes
-- [ ] FastAPI application: routes, Pydantic models, dependency injection for DB and Redis
-- [ ] `POST /investigations` and `GET /investigations/{id}` working end-to-end
-- [ ] Server-side `indicator_type` derivation and rate limiting
-- [ ] Redis plumbing: three streams, three consumer groups, `XREADGROUP` boilerplate
-- [ ] Lifecycle state machine: conditional transitions, including the zero-rows-matched skip path
-- [ ] Docker Compose: API, PostgreSQL, Redis with health checks
-- [ ] Structured JSON logging with `request_id` and `investigation_id`
+- [x] PostgreSQL schema: 6 tables, all uniqueness constraints, trigram and FTS indexes
+- [x] FastAPI application: routes, Pydantic models, dependency injection for DB and Redis
+- [x] `POST /investigations` and `GET /investigations/{id}` end to end
+- [x] Server-side `indicator_type` derivation and Redis-backed rate limiting
+- [x] Redis plumbing: three streams, three consumer groups
+- [x] Lifecycle state machine with conditional transitions and the zero-rows-matched skip path
+- [x] Docker Compose with health checks and a one-shot migration service
+- [x] Structured JSON logging with `request_id` and `investigation_id`
+
+**Milestone met:** submit a domain, watch the task chain through all three stages to `complete` in ~360 ms, with one investigation ID tying together log lines from the API and every worker.
+
+**What running it exposed.** `redis-py`'s default socket timeout is shorter than
+`XREADGROUP BLOCK 5000`, so every idle poll raised `TimeoutError` — an error with
+a full traceback every five seconds, per worker. Nothing was functionally broken,
+which is what made it worth fixing immediately: it would have buried every real
+error in noise. The socket timeout is now sized to the block duration plus a
+margin.
 
 ### Day 2 — Intelligence
 
-*Goal: a submitted domain is enriched, analysed by Claude, and correlated. The full result is queryable with verified evidence references.*
+*Goal: a submitted domain is enriched, analysed, and correlated. The full result is queryable with verified evidence references.*
 
-- [ ] DNS enrichment via `dnspython`
-- [ ] HTTP enrichment via `aiohttp`, **with SSRF guards**
-- [ ] Parallel enrichment; failures recorded as observations and in `enrichment_status`
-- [ ] Entity upsert during enrichment
-- [ ] AI analyst worker: Claude with all 5 tools wired to real queries, prompt caching, iteration cap, refusal handling
-- [ ] **Grounding verification** in `create_investigation_result`, with the error-and-retry path
-- [ ] Correlation worker: relationship creation with rule-based confidence; mark complete
-- [ ] `GET /investigations/{id}/evidence` and `/entities`
+- [x] DNS enrichment via `dnspython`; NXDOMAIN recorded as evidence, not as failure
+- [x] HTTP enrichment via `aiohttp` with manual redirect following and SSRF guards
+- [x] Parallel enrichment; failures written as observations and into `enrichment_status`
+- [x] Entity upsert during enrichment
+- [x] AI analyst: 5 strict-mode tools wired to real queries, prompt caching, iteration cap, refusal handling
+- [x] Grounding verification in `create_investigation_result`, with the error-and-retry path
+- [x] Correlation worker: relationships with rule-based confidence
+- [x] `GET /investigations/{id}/evidence` and `/entities`
+
+**Milestone met:** a URL investigation collects DNS and HTTP evidence, the analyst cites both, and every citation resolves to a real observation belonging to that investigation.
+
+**Deviation: the analyst was built against a swappable client.** The project was
+developed without an API key, so the analyst sits behind a `ClaudeClient`
+protocol with two implementations — the Anthropic SDK, and a scripted client
+that replays turns. The loop, tools, grounding check and persistence are
+identical under both. This began as a workaround and turned out to be the right
+structure regardless: failure paths that are awkward to elicit from a live model
+on demand — a hallucinated citation, a refusal, a model that never concludes —
+became ordinary deterministic tests. Scripted conclusions are prefixed `[stub]`
+so they cannot be mistaken for model output.
+
+**Consequence: the Anthropic client has never run.** It is written and wired, and
+its request shape follows the documented Messages API, but the first live request
+is the real test of it. `§13`'s AI evaluation tier is the only place that gap
+closes.
+
+**What running it exposed.**
+
+- The connection pool installs a `jsonb` codec that encodes on the way out, so
+  passing `json.dumps()` output stored JSON strings *containing* JSON text. Every
+  `enrichment_status` read returned a 500.
+- `get_enrichment` returned only the requested entity's observations. On a URL
+  investigation DNS attaches to the domain entity and HTTP to the URL entity, so
+  the analyst cited one source while `enrichment_status` showed two — it could
+  silently miss evidence collected for its own investigation. The tool now always
+  returns the complete citable set.
+- Migration `002`: `result_evidence.observation_id` needed `ON DELETE CASCADE`
+  (deleting an investigation deadlocked against its own cascade), and `confidence`
+  was `real`, serving 0.6 to clients as `0.6000000238418579`.
 
 ### Day 3 — Reliability and Demonstration
 
 *Goal: a reviewer clones the repo, runs `docker compose up`, submits an investigation, and sees a grounded result with supporting evidence.*
 
-- [ ] Reclaim loop: `XPENDING` + `XCLAIM` with per-stage thresholds, DLQ after 3 attempts
-- [ ] Stalled-investigation sweeper
-- [ ] Search endpoint: trigram indicator lookup plus FTS over explanations
-- [ ] `/health` and `/metrics` (histogram for stage latency)
-- [ ] Seed fixture: 4 prior investigations sharing infrastructure
-- [ ] End-to-end test: submit, poll to `complete`, validate schema, verify evidence references resolve
-- [ ] AI evaluation fixtures
-- [ ] README with architecture overview, setup, and a sample walkthrough
-- [ ] Code cleanup: consistent error handling, type hints throughout, no debug prints
+- [x] Reclaim loop: `XPENDING` + `XCLAIM` with per-stage thresholds, DLQ after 3 attempts
+- [x] Stalled-investigation sweeper
+- [x] Search endpoint: trigram indicator lookup plus FTS over explanations
+- [x] `/health` and `/metrics`, with stage latency as a histogram
+- [x] Seed fixture: 4 prior investigations, 3 sharing one address
+- [x] End-to-end test: submit, poll to `complete`, verify every citation resolves
+- [x] AI evaluation fixtures (marked `ai_eval`, excluded from the default run)
+- [x] GitHub Actions CI: lint, test against real PostgreSQL and Redis, image build, full-stack end-to-end
+- [x] README with architecture overview, setup, and a walkthrough
+- [x] Code cleanup: consistent error handling, type hints throughout, `ruff check` and `ruff format` clean
 
-> **A note on sequencing.** In the original plan, the retry mechanism sat on Day 2 alongside the entire AI layer. It has moved to Day 3 for two reasons: it is the least visible part of a demo, and its thresholds cannot be tuned sensibly until the analyst is running and its real latency is known. Day 2 is still the heaviest day; if it overruns, the correlation worker folds into the analyst worker as a single stage — the schema is unchanged and the split can be restored later.
+**Milestone met:** verified from an empty volume — `docker compose down -v`, then
+`up`, submit, poll, receive a classification whose citations all resolve.
+
+**The plan under-specified recovery.** It treated stalled work as one problem;
+it is two, and they need different mechanisms.
+
+A worker can die *holding* a message — delivered but never acknowledged, so
+`XREADGROUP >` will never offer it again. That is what `XPENDING` + `XCLAIM`
+recover. But a worker can also die *after* acknowledging and before publishing
+the next stage's task: nothing is pending, nothing is in any stream, and Redis
+cannot see the problem at all. Only the database knows, which is why the sweeper
+reads `investigations` rather than any queue. Both were verified against a real
+investigation stranded in `correlating` for 23 hours, not a contrived one.
+
+**What running it exposed.**
+
+- Dead-lettering a task left its investigation non-terminal, so the sweeper
+  republished it every 60 seconds forever. Giving up on a task now marks the
+  investigation failed too, and the DLQ decision moved from `TaskStream` to the
+  worker — the only layer holding both Redis and the database.
+- A malformed stored payload crash-looped through all three retries. Correlation
+  now raises `PermanentError` on structurally invalid observation data; retrying
+  cannot fix data that is already written.
+- `pip install .` failed outside the container. The Dockerfile copies
+  `pyproject.toml` before the source, so setuptools had nothing to auto-discover;
+  CI checks out everything first and hit the flat-layout error. ThreatGraph is an
+  application rather than a library, so it now declares no packages and runs from
+  the repository root, as the container does.
 
 ### Definition of done
 
-A reviewer runs `docker compose up`, submits `POST /investigations` with a domain, polls `GET /investigations/{id}` until `status = complete`, and receives an AI-generated classification whose evidence references resolve to real enrichment observations. That flow, working reliably, is the deliverable.
+A reviewer runs `docker compose up`, submits `POST /investigations` with a
+domain, polls `GET /investigations/{id}` until `status = complete`, and receives
+a classification whose evidence references resolve to real enrichment
+observations.
+
+**Met, and enforced.** The CI pipeline's end-to-end job performs exactly that
+sequence on every push and fails the build if any citation does not resolve to an
+observation belonging to that investigation.
 
 ---
 
@@ -768,3 +850,4 @@ These fixtures call the live API, so they are nondeterministic and cost money. T
 | Latency metric | Counter | Histogram | Latency has a distribution |
 | Retry implementation | Day 2 | Day 3 | Day 2 held the entire AI layer; thresholds cannot be tuned before the analyst runs |
 | Demo data | None | Seed fixture of 4 prior investigations | Two of five tools return nothing on a cold database |
+| `investigations.search_vector` | tsvector column | Removed; trigram index on `indicator` | §3 already argued trigram for indicators and FTS only for explanations — the column contradicted it. Corrected in v2.1 during Day 1. |

@@ -39,8 +39,7 @@ class GroundingFailure:
         parts: list[str] = []
         if self.unknown_evidence:
             parts.append(
-                "These evidence_refs do not exist: "
-                f"{[str(u) for u in self.unknown_evidence]}."
+                f"These evidence_refs do not exist: {[str(u) for u in self.unknown_evidence]}."
             )
         if self.foreign_evidence:
             parts.append(

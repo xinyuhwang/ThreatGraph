@@ -89,9 +89,7 @@ async def analyse(
     ]
 
     for iteration in range(1, settings.analyst_max_iterations + 1):
-        turn = await client.create_turn(
-            system=SYSTEM_PROMPT, messages=messages, tools=tools
-        )
+        turn = await client.create_turn(system=SYSTEM_PROMPT, messages=messages, tools=tools)
 
         if turn.stop_reason == "refusal":
             raise AnalysisFailed(
@@ -136,6 +134,5 @@ async def analyse(
         messages.append({"role": "user", "content": tool_results})
 
     raise AnalysisFailed(
-        f"Reached the {settings.analyst_max_iterations}-iteration cap without a "
-        "recorded result."
+        f"Reached the {settings.analyst_max_iterations}-iteration cap without a recorded result."
     )

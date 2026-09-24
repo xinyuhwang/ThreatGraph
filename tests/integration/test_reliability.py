@@ -45,9 +45,7 @@ class TestReclaim:
         stream, group = isolated_stream
         await deliver_without_ack(tasks, stream, group, "abc-123")
 
-        reclaimed = await tasks.reclaim(
-            stream, group, "impatient-worker", min_idle_ms=60_000
-        )
+        reclaimed = await tasks.reclaim(stream, group, "impatient-worker", min_idle_ms=60_000)
 
         assert reclaimed == []
 
@@ -80,9 +78,7 @@ class TestReclaim:
         attempts = []
         for index in range(3):
             await asyncio.sleep(0.05)
-            reclaimed = await tasks.reclaim(
-                stream, group, f"worker-{index}", min_idle_ms=10
-            )
+            reclaimed = await tasks.reclaim(stream, group, f"worker-{index}", min_idle_ms=10)
             attempts.append(reclaimed[0].attempt)
 
         assert attempts == [2, 3, 4]
@@ -109,8 +105,7 @@ class TestDeadLetter:
         assert await tasks.pending(stream, group) == 0
         entries = await redis.xrange("tasks:dlq", "-", "+")
         assert any(
-            fields.get("origin_message_id") == original.message_id
-            for _id, fields in entries
+            fields.get("origin_message_id") == original.message_id for _id, fields in entries
         )
 
 
@@ -167,9 +162,7 @@ class TestSweeper:
 
         assert recovered >= 1
 
-    async def test_recently_active_investigation_is_left_alone(
-        self, db, tasks, investigation
-    ):
+    async def test_recently_active_investigation_is_left_alone(self, db, tasks, investigation):
         """A stage that is simply slow must not be re-queued underneath itself."""
         await db.execute(
             "UPDATE investigations SET updated_at = now() WHERE id = $1",

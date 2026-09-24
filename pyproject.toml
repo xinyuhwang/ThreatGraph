@@ -17,6 +17,17 @@ dependencies = [
     "aiohttp>=3.11",
 ]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# ThreatGraph is an application, not a distributable library: it runs from the
+# repository root, the way the container does. Declaring no packages means
+# `pip install .` installs the dependencies and nothing else, instead of
+# setuptools trying to auto-discover seven top-level directories and failing.
+[tool.setuptools]
+packages = []
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
@@ -40,6 +51,10 @@ addopts = "-m 'not ai_eval'"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Ruff formats Python code blocks inside Markdown. The design document's
+# snippets are hand-aligned for readability and are illustrative rather than
+# executable, so they are left alone.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

@@ -70,9 +70,7 @@ class AnthropicClient:
             for block in content
             if block.get("type") == "tool_use"
         ]
-        text = "\n".join(
-            block["text"] for block in content if block.get("type") == "text"
-        ).strip()
+        text = "\n".join(block["text"] for block in content if block.get("type") == "text").strip()
 
         usage = {
             "input_tokens": response.usage.input_tokens,

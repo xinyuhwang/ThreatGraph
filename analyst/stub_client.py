@@ -252,6 +252,4 @@ class ScriptedClient:
     @classmethod
     def never_concluding(cls, primary_entity_id: str) -> "ScriptedClient":
         """Loops on a read tool forever, to prove the iteration cap holds."""
-        return cls(
-            [lambda _m: _tool_use("get_enrichment", {"entity_id": primary_entity_id}, 0)]
-        )
+        return cls([lambda _m: _tool_use("get_enrichment", {"entity_id": primary_entity_id}, 0)])

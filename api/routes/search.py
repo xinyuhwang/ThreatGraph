@@ -80,9 +80,7 @@ async def search(
     the analyst said about them."""
     term = q.strip()
 
-    investigations = await db.fetch(
-        SEARCH_QUERY, term, type, status, classification, limit, offset
-    )
+    investigations = await db.fetch(SEARCH_QUERY, term, type, status, classification, limit, offset)
     entities = await db.fetch(ENTITY_QUERY, term, limit)
 
     return {

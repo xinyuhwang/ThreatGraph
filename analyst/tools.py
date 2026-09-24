@@ -83,9 +83,7 @@ def tool_definitions() -> list[dict[str, Any]]:
             ),
             "input_schema": {
                 "type": "object",
-                "properties": {
-                    "entity_id": {"type": "string", "description": "Entity UUID."}
-                },
+                "properties": {"entity_id": {"type": "string", "description": "Entity UUID."}},
                 "required": ["entity_id"],
                 "additionalProperties": False,
             },
@@ -102,9 +100,7 @@ def tool_definitions() -> list[dict[str, Any]]:
             ),
             "input_schema": {
                 "type": "object",
-                "properties": {
-                    "entity_id": {"type": "string", "description": "Entity UUID."}
-                },
+                "properties": {"entity_id": {"type": "string", "description": "Entity UUID."}},
                 "required": ["entity_id"],
                 "additionalProperties": False,
             },
