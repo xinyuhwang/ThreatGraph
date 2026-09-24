@@ -178,13 +178,32 @@ Returns the entities discovered during enrichment and how they connect — inclu
 
 ```bash
 # Fuzzy indicator lookup — matches substrings, not just exact values
-curl 'localhost:8000/search?q=suspicious'
+curl 'localhost:8000/search?q=paypal'
 
-# Filter by what the analyst concluded
-curl 'localhost:8000/search?q=payment&classification=malicious'
+# Full-text search over what the analyst wrote
+curl 'localhost:8000/search?q=credential+harvesting'
+
+# Filter by conclusion
+curl 'localhost:8000/search?q=example&classification=malicious'
 ```
 
-Indicator search uses trigram matching, so `paypal` finds `paypal-secure-login.com`. Full-text search runs over the analyst's explanations.
+Indicator search uses trigram matching, so `paypal` finds `secure-paypal-login.example`. Full-text search runs over the analyst's explanations — two index types, two different jobs.
+
+### 6. Follow shared infrastructure
+
+The seeded data contains three separate phishing domains that all resolve to one address:
+
+```bash
+curl 'localhost:8000/investigations/11111111-0000-4000-8000-000000000002/entities'
+```
+
+```
+secure-paypal-login.example      --resolves_to--> 198.51.100.17
+paypal-verify-account.example    --resolves_to--> 198.51.100.17
+account-update-paypal.example    --resolves_to--> 198.51.100.17
+```
+
+This is what the entity graph is for, and why the analyst's `search_indicators` and `get_related_entities` tools exist.
 
 ---
 
@@ -284,6 +303,7 @@ Every log line carries `request_id`, and `investigation_id` once one exists — 
 .
 ├── api/               FastAPI app — routes, request/response models, dependencies
 ├── workers/           enrichment.py, analyst.py, correlation.py, sweeper.py
+│                      base.py holds the shared loop: reclaim, retry, ack ordering
 ├── enrichment/
 │   ├── dns.py         DNS record collection and normalisation
 │   ├── http.py        HTTP fetching, redirect chains, fingerprinting
@@ -295,10 +315,13 @@ Every log line carries `request_id`, and `investigation_id` once one exists — 
 ├── core/
 │   ├── db.py          Connection pool, query helpers
 │   ├── streams.py     Redis Streams: publish, consume, reclaim, DLQ
+│   ├── store.py       Idempotent writes (INSERT ... ON CONFLICT)
+│   ├── lifecycle.py   Status transitions, including stage resume
+│   ├── metrics.py     Prometheus rendering + stage-duration histogram
 │   ├── logging.py     Structured JSON logging with trace IDs
 │   └── config.py      Environment configuration
 ├── migrations/        Schema and indexes
-├── seeds/             Demo data — four prior investigations
+├── seeds/             demo.sql — four prior investigations sharing a host
 ├── tests/             unit, integration, reliability, e2e, ai_eval
 └── docker-compose.yml
 ```
@@ -349,7 +372,11 @@ docker compose run --rm api pytest tests/e2e           # full stack, real domain
 docker compose run --rm api pytest -m ai_eval
 ```
 
-The reliability tier is the one worth looking at. "Idempotent, safe to restart" is easy to claim, so these tests prove it: the enrichment worker is killed mid-investigation and the investigation must still reach `complete` with no duplicated observations; a task is acknowledged without publishing its successor and the sweeper must notice and republish it; three consecutive failures must land the message in the dead-letter stream and stop it being reclaimed forever.
+The reliability tier is the one worth looking at. "Idempotent, safe to restart" is easy to claim, so these tests reproduce the two distinct ways work gets abandoned and show each is recovered.
+
+A worker can die **holding** a message — it was delivered but never acknowledged, so `XREADGROUP >` will never offer it again. The reclaim loop finds it with `XPENDING`, takes it over with `XCLAIM` (atomic, so two workers cannot both win it), and retries. After three attempts the message goes to the dead-letter stream *and* the investigation is marked failed — dead-lettering alone would leave it non-terminal, and the sweeper would republish it forever.
+
+Or a worker can die **after acknowledging** but before publishing the next stage's task. Nothing is pending, nothing is in any stream, and Redis has no idea anything is wrong. Only the database knows, which is what the sweeper reads. A swept task re-enters a stage the investigation is already sitting in, so the workers accept their own working status as a valid entry point.
 
 The AI evaluation tier checks that the analyst behaves predictably against fixed evidence sets — a known-malicious set produces `malicious` with confidence ≥ 0.7, an incomplete set produces `unknown` with confidence < 0.5, and no fixture ever yields an evidence reference that doesn't exist. These call the real API, so they're marked and kept out of CI.
 

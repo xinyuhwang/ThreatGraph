@@ -11,13 +11,15 @@ import asyncio
 import os
 import signal
 import socket
+import time
 from abc import ABC, abstractmethod
 
 from core.config import settings
 from core.db import Database
-from core.lifecycle import Status, advance, is_cancelled, mark_failed
+from core.lifecycle import Status, advance, advance_or_resume, is_cancelled, mark_failed
 from core.logging import configure_logging, get_logger, investigation_context
-from core.streams import STAGE_GROUPS, Task, TaskStream, create_redis
+from core.metrics import observe_stage_duration
+from core.streams import MAX_ATTEMPTS, STAGE_GROUPS, Task, TaskStream, create_redis
 
 log = get_logger(__name__)
 
@@ -42,6 +44,12 @@ class Worker(ABC):
     next_stream: str | None = None
     #: Status set after ``handle`` succeeds. Only the last stage sets this.
     final_status: Status | None = None
+    #: How long a delivered task may sit unacknowledged before another worker
+    #: takes it over. Set per stage: enrichment finishes in seconds, while an
+    #: agentic Claude loop making several tool calls routinely runs past
+    #: thirty. One shared threshold would keep reclaiming healthy analysis
+    #: work and paying for the same investigation twice.
+    idle_reclaim_ms: int = 30_000
 
     def __init__(self, db: Database, tasks: TaskStream) -> None:
         self.db = db
@@ -56,15 +64,30 @@ class Worker(ABC):
         without retrying."""
 
     async def run(self) -> None:
-        log.info("worker started", stream=self.stream, consumer=self.consumer)
+        log.info(
+            "worker started",
+            stream=self.stream,
+            consumer=self.consumer,
+            idle_reclaim_ms=self.idle_reclaim_ms,
+        )
         while self._running:
             try:
-                tasks = await self.tasks.consume(
+                # Stalled work first. A task abandoned by a dead worker is
+                # older than anything waiting in the stream, so it should not
+                # queue behind new submissions.
+                tasks = await self.tasks.reclaim(
                     self.stream,
                     self.group,
                     self.consumer,
-                    block_ms=settings.worker_block_ms,
+                    min_idle_ms=self.idle_reclaim_ms,
                 )
+                if not tasks:
+                    tasks = await self.tasks.consume(
+                        self.stream,
+                        self.group,
+                        self.consumer,
+                        block_ms=settings.worker_block_ms,
+                    )
             except Exception:
                 log.exception("consume failed, backing off", stream=self.stream)
                 await asyncio.sleep(1)
@@ -79,19 +102,32 @@ class Worker(ABC):
     async def _process(self, task: Task) -> None:
         investigation_id = task.investigation_id
 
+        # Out of attempts. Dead-lettering the message is only half the job:
+        # the investigation has to reach a terminal status too, or the sweeper
+        # will keep finding it stalled and republishing it forever.
+        if task.attempt > MAX_ATTEMPTS:
+            reason = f"stage {self.stream} failed after {MAX_ATTEMPTS} attempts"
+            await mark_failed(self.db, investigation_id, reason)
+            await self.tasks.send_to_dlq(task, self.group, reason)
+            return
+
         # Cancellation is checked at the stage boundary, before any work.
         if await is_cancelled(self.db, investigation_id):
             log.info("investigation cancelled, skipping stage", stream=self.stream)
             await self._ack(task)
             return
 
-        # Conditional transition. A False return means another worker already
-        # advanced this investigation — normal under at-least-once delivery,
-        # so acknowledge and move on rather than retrying.
-        if not await advance(self.db, investigation_id, self.expected_status, self.working_status):
+        # Enter the stage, starting it or resuming it. A False return means
+        # the investigation has genuinely moved past this stage — normal under
+        # at-least-once delivery — so acknowledge and move on rather than
+        # retrying.
+        if not await advance_or_resume(
+            self.db, investigation_id, self.expected_status, self.working_status
+        ):
             await self._ack(task)
             return
 
+        started = time.perf_counter()
         try:
             await self.handle(investigation_id)
         except PermanentError as exc:
@@ -103,6 +139,13 @@ class Worker(ABC):
             # reclaim loop (Day 3) redelivers it to another worker.
             log.exception("stage failed, leaving task for retry", stream=self.stream)
             return
+
+        # Recorded only for successful stages. Mixing failed attempts into the
+        # distribution would describe something other than how long the work
+        # takes.
+        await observe_stage_duration(
+            self.tasks.redis, self.working_status.value, time.perf_counter() - started
+        )
 
         if self.final_status is not None:
             await advance(self.db, investigation_id, self.working_status, self.final_status)

@@ -10,6 +10,7 @@ import asyncio
 from typing import Any
 from uuid import UUID
 
+from core.config import settings
 from core.indicators import hostname_of
 from core.lifecycle import Status
 from core.logging import get_logger
@@ -30,6 +31,7 @@ def describe_failure(exc: BaseException) -> dict[str, Any]:
 class EnrichmentWorker(Worker):
     stream = STREAM_ENRICH
     expected_status = Status.PENDING
+    idle_reclaim_ms = settings.reclaim_idle_enrich_ms
     working_status = Status.ENRICHING
     next_stream = STREAM_ANALYZE
 

@@ -97,6 +97,54 @@ async def advance(
     return True
 
 
+async def advance_or_resume(
+    db: Database,
+    investigation_id: str,
+    expected: Status,
+    working: Status,
+) -> bool:
+    """Enter a stage, whether starting it or resuming it.
+
+    A reclaimed or swept task may arrive for an investigation that is already
+    sitting in this stage — a worker took it, set the status, then died. A
+    plain conditional transition would refuse that, because the investigation
+    is no longer in ``expected``, and the work would never be redone.
+
+    Accepting either state makes the stage resumable. Re-running it is safe
+    because every write in the pipeline is idempotent.
+
+    Returns False only when the investigation has genuinely moved past this
+    stage, or was cancelled — in which case the caller should acknowledge and
+    stop.
+    """
+    if not is_valid(expected, working):
+        raise InvalidTransition(f"{expected} -> {working} is not a permitted transition")
+
+    updated = await db.fetchval(
+        """
+        UPDATE investigations
+           SET status = $3, updated_at = now()
+         WHERE id = $1 AND status IN ($2, $3)
+        RETURNING id
+        """,
+        investigation_id,
+        expected.value,
+        working.value,
+    )
+
+    if updated is None:
+        actual = await get_status(db, investigation_id)
+        log.info(
+            "stage skipped, investigation already past it",
+            expected=expected.value,
+            working=working.value,
+            actual=actual.value if actual else None,
+        )
+        return False
+
+    return True
+
+
 async def mark_failed(db: Database, investigation_id: str, error: str) -> None:
     """Terminal failure from any non-terminal state. The investigation stays
     queryable so a client polling it sees why it stopped."""

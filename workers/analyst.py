@@ -9,6 +9,7 @@ import asyncio
 
 from analyst.agent import AnalysisFailed, analyse, load_evidence
 from analyst.factory import build_client
+from core.config import settings
 from core.lifecycle import Status
 from core.logging import get_logger
 from core.streams import STREAM_ANALYZE, STREAM_CORRELATE
@@ -22,6 +23,10 @@ class AnalystWorker(Worker):
     expected_status = Status.ENRICHING
     working_status = Status.ANALYZING
     next_stream = STREAM_CORRELATE
+    # An agentic loop with several tool calls routinely outlives the
+    # 30s used elsewhere. Reclaiming healthy analysis work would start a
+    # second LLM call for the same investigation.
+    idle_reclaim_ms = settings.reclaim_idle_analyze_ms
 
     async def handle(self, investigation_id: str) -> None:
         evidence = await load_evidence(self.db, investigation_id)

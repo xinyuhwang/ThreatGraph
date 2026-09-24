@@ -1,18 +1,15 @@
-"""Fixtures for tests that need a real PostgreSQL."""
+"""Fixtures for integration tests.
+
+``db`` and ``redis`` come from the suite-level conftest, so the AI evaluation
+tier can share them.
+"""
+
+import uuid
 
 import pytest
 
-from core.config import settings
-from core.db import Database
 from core.store import save_observation, upsert_entity
-
-
-@pytest.fixture
-async def db():
-    database = Database(settings.database_url)
-    await database.connect(min_size=1, max_size=3)
-    yield database
-    await database.close()
+from core.streams import TaskStream
 
 
 @pytest.fixture
@@ -69,3 +66,23 @@ async def other_investigation(db):
     yield {"id": str(investigation_id), "observation_id": str(observation_id)}
 
     await db.execute("DELETE FROM investigations WHERE id = $1", investigation_id)
+
+
+@pytest.fixture
+async def isolated_stream(redis):
+    """A private stream and consumer group.
+
+    The live workers run alongside these tests and consume from the real
+    streams, so anything published there would be raced away before a test
+    could assert on it.
+    """
+    name = f"test:tasks:{uuid.uuid4().hex[:10]}"
+    group = "test-cg"
+    await redis.xgroup_create(name, group, id="0", mkstream=True)
+    yield name, group
+    await redis.delete(name)
+
+
+@pytest.fixture
+async def tasks(redis):
+    return TaskStream(redis)

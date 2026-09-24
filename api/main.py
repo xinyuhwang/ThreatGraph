@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from api.routes import evidence, investigations, ops
+from api.routes import evidence, investigations, ops, search
 from core.config import settings
 from core.db import Database
 from core.logging import (
@@ -56,6 +56,7 @@ app = FastAPI(
 
 app.include_router(investigations.router)
 app.include_router(evidence.router)
+app.include_router(search.router)
 app.include_router(ops.router)
 
 

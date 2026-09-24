@@ -81,5 +81,11 @@ services:
     <<: *app
     command: ["python", "-m", "workers.correlation"]
 
+  # Recovers investigations that stopped advancing with no task in flight —
+  # the failure the stream reclaim loop cannot see.
+  sweeper:
+    <<: *app
+    command: ["python", "-m", "workers.sweeper"]
+
 volumes:
   pgdata:

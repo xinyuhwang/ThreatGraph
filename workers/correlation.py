@@ -15,12 +15,13 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from core.config import settings
 from core.indicators import hostname_of
 from core.lifecycle import Status
 from core.logging import get_logger
 from core.store import create_relationship, get_observation_map, upsert_entity
 from core.streams import STREAM_CORRELATE
-from workers.base import Worker, run_worker
+from workers.base import PermanentError, Worker, run_worker
 
 log = get_logger(__name__)
 
@@ -38,9 +39,30 @@ CONFIDENCE: dict[str, float] = {
 }
 
 
+def payload_of(observation: Any) -> dict[str, Any] | None:
+    """Read an observation's payload, or None if there is nothing usable.
+
+    Guards a trust boundary: this data was written by an earlier run, possibly
+    an earlier version of the code. A payload that is not an object cannot be
+    interpreted and never will be, so it is a permanent failure rather than
+    something to retry — retrying only burns attempts before the same result.
+    """
+    if observation is None or observation["status"] != "ok":
+        return None
+
+    data = observation["data"]
+    if not isinstance(data, dict):
+        raise PermanentError(
+            f"Observation {observation['id']} has a malformed payload "
+            f"({type(data).__name__}, expected object) and cannot be correlated."
+        )
+    return data
+
+
 class CorrelationWorker(Worker):
     stream = STREAM_CORRELATE
     expected_status = Status.ANALYZING
+    idle_reclaim_ms = settings.reclaim_idle_enrich_ms
     working_status = Status.CORRELATING
     next_stream = None
     final_status = Status.COMPLETE
@@ -66,11 +88,12 @@ class CorrelationWorker(Worker):
 
     async def _link_resolved_addresses(self, domain_id: UUID, observation: Any) -> int:
         """domain --resolves_to--> ip, one edge per A/AAAA record."""
-        if observation is None or observation["status"] != "ok":
+        data = payload_of(observation)
+        if data is None:
             return 0
 
         created = 0
-        for address in observation["data"].get("resolved_ips", []):
+        for address in data.get("resolved_ips", []):
             ip_id = await upsert_entity(self.db, "ip", address)
             if await create_relationship(
                 self.db, domain_id, ip_id, "resolves_to", CONFIDENCE["resolves_to"]
@@ -85,10 +108,11 @@ class CorrelationWorker(Worker):
         they are skipped — recording them would fill the graph with self-edges
         that say nothing.
         """
-        if observation is None or observation["status"] != "ok":
+        data = payload_of(observation)
+        if data is None:
             return 0
 
-        chain: list[str] = observation["data"].get("redirect_chain", [])
+        chain: list[str] = data.get("redirect_chain", [])
         hosts = [urlsplit(url).hostname for url in chain]
 
         created = 0

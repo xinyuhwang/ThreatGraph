@@ -1,10 +1,13 @@
 """Operational endpoints."""
 
 from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.responses import PlainTextResponse
 
 from api.deps import get_db
 from api.models import DependencyHealth
 from core.db import Database
+from core.metrics import render
+from core.streams import STAGE_GROUPS
 
 router = APIRouter(tags=["operations"])
 
@@ -35,5 +38,16 @@ async def health(
     return DependencyHealth(status="ok" if healthy else "degraded", dependencies=dependencies)
 
 
-# /metrics (Prometheus text format: counts by status, queue depth per stream,
-# and a histogram for stage latency) lands on Day 3.
+@router.get(
+    "/metrics",
+    response_class=PlainTextResponse,
+    summary="Prometheus metrics",
+    responses={200: {"content": {"text/plain": {}}}},
+)
+async def metrics(request: Request, db: Database = Depends(get_db)) -> str:
+    """Counts, queue depth, and stage latency in Prometheus exposition format.
+
+    Latency is a histogram rather than a counter — an average would hide the
+    slow tail, which is the reason to look.
+    """
+    return await render(db, request.app.state.redis, STAGE_GROUPS)

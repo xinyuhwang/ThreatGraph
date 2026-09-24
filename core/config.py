@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 30
     seed_demo_data: bool = True
 
+    # The sweeper recovers investigations with no task in flight. Its
+    # staleness threshold must comfortably exceed the slowest stage, or it
+    # re-queues work that is simply still running.
+    sweeper_interval_seconds: int = 60
+    sweeper_stale_after_seconds: int = 600
+    sweeper_batch_size: int = 50
+
     # How long a worker blocks on XREADGROUP before looping. Keeps shutdown
     # responsive without busy-waiting.
     worker_block_ms: int = 5_000

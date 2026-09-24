@@ -49,23 +49,48 @@ async def main() -> int:
         }
 
         pending = sorted(p for p in MIGRATIONS_DIR.glob("*.sql") if p.name not in applied)
-        if not pending:
+        if pending:
+            for path in pending:
+                log.info("applying migration", filename=path.name)
+                # One transaction per file: a failure leaves no partial schema.
+                async with conn.transaction():
+                    await conn.execute(path.read_text())
+                    await conn.execute(
+                        "INSERT INTO schema_migrations (filename) VALUES ($1)", path.name
+                    )
+            log.info("migrations complete", applied=len(pending))
+        else:
             log.info("schema up to date", applied=len(applied))
-            return 0
 
-        for path in pending:
-            log.info("applying migration", filename=path.name)
-            # One transaction per file: a failure leaves no partial schema.
-            async with conn.transaction():
-                await conn.execute(path.read_text())
-                await conn.execute(
-                    "INSERT INTO schema_migrations (filename) VALUES ($1)", path.name
-                )
-
-        log.info("migrations complete", applied=len(pending))
+        await load_seed(conn)
         return 0
     finally:
         await conn.close()
+
+
+async def load_seed(conn: asyncpg.Connection) -> None:
+    """Load demo data, if enabled and not already present.
+
+    Two of the analyst's five tools query history, so a database with none
+    exercises the pipeline without ever showing the capability the graph
+    exists for. Every statement in the seed is an upsert, so running it
+    repeatedly is harmless.
+    """
+    if not settings.seed_demo_data:
+        return
+
+    seed_path = pathlib.Path(__file__).parent.parent / "seeds" / "demo.sql"
+    if not seed_path.exists():
+        log.warning("seed enabled but seeds/demo.sql is missing")
+        return
+
+    async with conn.transaction():
+        await conn.execute(seed_path.read_text())
+
+    count = await conn.fetchval(
+        "SELECT count(*) FROM investigations WHERE indicator LIKE '%.example'"
+    )
+    log.info("demo data loaded", seeded_investigations=count)
 
 
 if __name__ == "__main__":
