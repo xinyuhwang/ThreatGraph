@@ -214,16 +214,16 @@ This is what the entity graph is for, and why the analyst's `search_indicators` 
    POST ─────────>│ FastAPI │──── insert ─────┐
    (returns       └────┬────┘                 │
     immediately)       │ XADD                 ▼
-                       ▼                ┌──────────────┐
-              ┌────────────────┐        │  PostgreSQL  │
-              │ tasks:enrich   │        │              │
-              └───────┬────────┘        │ investigations│
-                      ▼                 │ entities      │
-            ┌───────────────────┐       │ observations  │
-            │ Enrichment worker │──────>│ relationships │
-            │  DNS + HTTP       │       │ results       │
+                       ▼                ┌──────────────--┐
+              ┌────────────────┐        │  PostgreSQL    │
+              │ tasks:enrich   │        │                │
+              └───────┬────────┘        │ investigations │
+                      ▼                 │ entities       │
+            ┌───────────────────┐       │ observations   │
+            │ Enrichment worker │──────>│ relationships  │
+            │  DNS + HTTP       │       │ results        │
             └───────┬───────────┘       │ result_evidence│
-                    │ XADD              └──────▲───────┘
+                    │ XADD              └──────▲───────--┘
                     ▼                          │
             ┌────────────────┐                 │
             │ tasks:analyze  │                 │
